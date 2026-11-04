@@ -88,9 +88,9 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/webfetch-tool"
-Documentation = "https://webfetch-tool.readthedocs.io"
-Repository = "https://github.com/yourusername/webfetch-tool"
+Homepage = "https://github.com/sujaychandrakoyyalamudi/WebFetchTool"
+Documentation = "https://github.com/sujaychandrakoyyalamudi/WebFetchTool/blob/main/webfetch_tool/README.md"
+Repository = "https://github.com/sujaychandrakoyyalamudi/WebFetchTool"
 
 [tool.setuptools.packages.find]
 where = ["src"]
