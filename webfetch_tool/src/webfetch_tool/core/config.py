@@ -10,10 +10,10 @@ from typing import Any, Dict, List, Optional
 class FetchConfig:
     """Configuration for fetch operations."""
 
-    # Timeouts
+    # Timeouts, in seconds
     connect_timeout: float = 5.0
     http_timeout: float = 30.0
-    browser_timeout: float = 60.0
+    browser_timeout: float = 60.0  # browser-mode navigation; converted to ms for Playwright
 
     # Retry settings
     retry_count: int = 2

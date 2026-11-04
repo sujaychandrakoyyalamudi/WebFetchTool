@@ -17,6 +17,17 @@ class PolicyVerdict:
     reason: Optional[str] = None
 
 
+def _normalize_domain(name: str) -> str:
+    """Lowercase a domain name and drop trailing dots ("Example.COM." -> "example.com")."""
+    return name.lower().rstrip(".")
+
+
+def _matches_domain(host: str, domain: str) -> bool:
+    """Return True if the normalized host is domain or one of its subdomains."""
+    domain = _normalize_domain(domain)
+    return host == domain or host.endswith(f".{domain}")
+
+
 class PolicyEngine:
     """
     Policy engine for URL access control.
@@ -62,10 +73,20 @@ class PolicyEngine:
                 reason="HTTPS required",
             )
         
+        # urlparse and requests/browsers disagree on hosts such as
+        # "https://evil.example\@allowed.example/" (allowed.example vs evil.example)
+        if "\\" in parsed.netloc:
+            return PolicyVerdict(
+                allowed=False,
+                reason="Backslash in URL authority",
+            )
+
+        # Match domains on the hostname, which excludes userinfo and port
+        domain = _normalize_domain(parsed.hostname or "")
+
         # Check domain blocklist first (higher priority)
-        domain = parsed.netloc.lower()
         for blocked in self.config.blocked_domains:
-            if domain == blocked or domain.endswith(f".{blocked}"):
+            if _matches_domain(domain, blocked):
                 return PolicyVerdict(
                     allowed=False,
                     reason=f"Domain '{domain}' is blocked",
@@ -75,7 +96,7 @@ class PolicyEngine:
         if self.config.allowed_domains:
             allowed = False
             for allowed_domain in self.config.allowed_domains:
-                if domain == allowed_domain or domain.endswith(f".{allowed_domain}"):
+                if _matches_domain(domain, allowed_domain):
                     allowed = True
                     break
             

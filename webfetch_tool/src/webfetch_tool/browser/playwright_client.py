@@ -55,7 +55,7 @@ class BrowserClient:
     def fetch(
         self,
         url: str,
-        timeout: float = 60000,
+        timeout: float = 60.0,
         wait_until: str = "networkidle",
         storage_state: Optional[str] = None,
         trace_id: Optional[str] = None,
@@ -65,7 +65,7 @@ class BrowserClient:
         
         Args:
             url: URL to fetch
-            timeout: Navigation timeout in milliseconds
+            timeout: Navigation timeout in seconds (converted to milliseconds for Playwright)
             wait_until: Wait condition (load, domcontentloaded, networkidle, commit)
             storage_state: Path to storage state file for cookies/auth
             trace_id: Trace identifier for debugging
@@ -92,8 +92,8 @@ class BrowserClient:
         try:
             page = context.new_page()
             
-            # Navigate to page
-            response = page.goto(url, wait_until=wait_until, timeout=timeout)
+            # Navigate to page (Playwright timeouts are in milliseconds)
+            response = page.goto(url, wait_until=wait_until, timeout=timeout * 1000)
             
             # Get page content
             html = page.content()
