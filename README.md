@@ -20,7 +20,7 @@ Validation, policy, robots.txt, and network failures come back in the result ins
 - Retries through urllib3 `Retry`, restricted to `GET` and `HEAD`, with exponential backoff. Responses with status 429, 500, 502, 503, or 504 are retried by default, and `Retry-After` is honored.
 - Conditional requests: pass `etag` or `last_modified` to `fetch()`. A 304 response comes back as a successful result with no body.
 - Browser mode: headless Chromium through Playwright, a new browser context per fetch, an optional Playwright storage-state file, a full-page screenshot, and a Playwright trace.
-- URL rules: scheme allowlist, HTTPS-only option, domain allow and block lists (subdomains included), port allow and block lists, and blocking of private IPv4 ranges.
+- URL rules: scheme allowlist, HTTPS-only option, domain allow and block lists matched on the hostname (subdomains included), port allow and block lists, and blocking of private IPv4 ranges.
 - robots.txt checking, on by default, with a simplified parser. See [Safety and limits](#safety-and-limits).
 - HTML extraction: main text with readability-lxml, absolute links with exact duplicates removed, images, `<meta>` tags, Open Graph, Twitter card tags, and JSON-LD.
 - Authentication in HTTP mode: API key header, HTTP Basic, Bearer token, cookies, and custom headers.
@@ -71,8 +71,8 @@ Browser mode, saving the screenshot:
 ```python
 from webfetch_tool import FetchConfig, WebFetcher
 
-# browser_timeout is passed to Playwright, which expects milliseconds.
-config = FetchConfig(use_browser=True, browser_timeout=60_000)
+# browser_timeout is the navigation timeout in seconds (default 60).
+config = FetchConfig(use_browser=True, browser_timeout=30)
 
 with WebFetcher(config=config) as fetcher:
     result = fetcher.fetch("https://example.com")
@@ -101,13 +101,12 @@ The [detailed reference](webfetch_tool/README.md#quick-start) has examples for p
 
 - SSRF checks apply only to the URL passed to `fetch()`. Its hostname is resolved to IPv4 addresses, and the fetch is refused if any address is in 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 0.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, or 240.0.0.0/4. An explicit port must be 80 or 443 by default.
 - Not covered by those checks: redirect targets (`requests` follows them unchecked), IPv6 addresses, DNS rebinding (the name is resolved again at connect time), and anything Chromium loads after the first URL in browser mode.
-- Domain rules compare against the host including any explicit port, so `https://blocked.example:443/` does not match a `blocked_domains` entry for `blocked.example`.
+- Domain rules match the URL's hostname: lowercased, without userinfo or port, and without a trailing dot. List entries are normalized the same way and also match their subdomains, so `blocked_domains=["blocked.example"]` refuses `https://user@Sub.Blocked.Example:443/`. A URL whose authority (the `user@host:port` part) contains a backslash is refused, because Python's `urlparse` and `requests` disagree on which host it names.
 - robots.txt is respected by default, with a simplified parser: prefix matching only and no wildcards. The fetch is allowed when robots.txt returns 404 or cannot be fetched. The verdict is cached per host for the life of the fetcher, and a known bug caches the verdict for the first path checked on that host.
 - Privacy: there is no PII detection, redaction, or logging. Results keep the full response headers and the raw body. Browser mode writes a Playwright trace, with screenshots and DOM snapshots, to `/tmp/trace-<trace_id>.zip` on every fetch and never deletes it.
 - Credentials in `AuthConfig` are set on the shared session. They are sent with every request that fetcher makes, including robots.txt requests and requests to other hosts.
 - TLS certificate verification is left at the `requests` and Playwright defaults, which verify certificates.
 - Bodies are read fully into memory and then cut to `max_content_size` (10 MB). `max_redirects` is not applied, so `requests` allows up to 30 redirects. `fetch_batch()` and `MultiURLFetcher.fetch_all()` fetch one URL at a time.
-- Known issue: `browser_timeout` is passed to Playwright in milliseconds, so the default `60.0` allows only 60 ms. Set it explicitly, as in the example above.
 
 ## Project layout
 
@@ -118,6 +117,7 @@ webfetch_tool/
   README.md                        detailed reference
   pyproject.toml                   package metadata and dependencies
   examples/basic_usage.py          example script
+  tests/                           pytest suite (domain rules, browser timeout)
   src/webfetch_tool/
     core/fetcher.py                WebFetcher: URL checks, HTTP and browser fetch, parsing
     core/config.py                 FetchConfig, PolicyConfig, AuthConfig
@@ -132,7 +132,13 @@ webfetch_tool/
 
 ## Tests
 
-No automated tests yet. The `dev` extra installs pytest, black, ruff, and mypy, but there is no `tests/` directory or CI configuration.
+The tests in `webfetch_tool/tests/` cover the domain rules in `PolicyEngine` (explicit ports, userinfo, subdomains, letter case, and trailing dots) and check that `browser_timeout` reaches Playwright in milliseconds. They need no network access and no browser (Playwright is replaced with mocks). With the `dev` extra installed (see [Install](#install)), run them from `webfetch_tool/`:
+
+```bash
+pytest
+```
+
+The run also prints a coverage report. There is no CI configuration yet.
 
 ## Roadmap (not implemented yet)
 

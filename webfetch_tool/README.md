@@ -2,7 +2,7 @@
 
 WebFetchTool is a Python library that fetches web pages for LLM applications. Before each fetch it checks the URL against configurable safety rules and robots.txt. It then fetches the page over HTTP or renders it in headless Chromium, extracts the main text, links, and page metadata, and returns them together with fetch metadata in one result object. LangChain wrappers are included.
 
-Status: alpha, version 0.1.0. The package is not published on PyPI. No automated tests yet.
+Status: alpha, version 0.1.0. The package is not published on PyPI. A pytest suite covers the domain rules and the browser timeout (see [Development and tests](#development-and-tests)).
 
 This file is the detailed reference. The [repository README](../README.md) is a shorter overview.
 
@@ -41,14 +41,14 @@ WebFetcher.fetch(url)
 - Turned on with `FetchConfig(use_browser=True)`, or per call with `fetch(url, use_browser=True)`.
 - The browser is launched once per `WebFetcher` and reused. Each fetch runs in a new browser context that is closed afterward, so cookies and storage do not carry over between fetches.
 - An optional Playwright storage-state file (`AuthConfig.storage_state_path`) is loaded into each context, for example to reuse a logged-in session.
-- Navigation waits for the `wait_until` state (`"networkidle"` by default).
+- Navigation waits for the `wait_until` state (`"networkidle"` by default) for up to `browser_timeout` seconds (60 by default).
 - Each fetch returns the rendered HTML, the final URL, the status code, a full-page PNG screenshot (`result.screenshot`), and a Playwright trace archive (`result.trace`).
 - Optional proxy: `PolicyConfig(proxy_enabled=True, proxy_url=...)` is passed to Chromium. HTTP mode ignores these fields.
 
 ### URL checks (`security/ssrf.py`, `core/policy.py`)
 
 - `SSRFValidator`: URL format check with `validators.url()`, scheme allowlist, and blocking of private and reserved IPv4 addresses.
-- `PolicyEngine`: scheme allowlist, HTTPS-only option, domain blocklist and allowlist (subdomains included), and port allow and block lists.
+- `PolicyEngine`: scheme allowlist, HTTPS-only option, domain blocklist and allowlist matched on the URL's hostname (subdomains included), and port allow and block lists.
 - The exact coverage and the gaps are listed under [Safety and limits](#safety-and-limits).
 
 ### robots.txt
@@ -132,8 +132,8 @@ else:
 ```python
 from webfetch_tool import FetchConfig, WebFetcher
 
-# browser_timeout is passed to Playwright, which expects milliseconds.
-config = FetchConfig(use_browser=True, browser_timeout=60_000)
+# browser_timeout is the navigation timeout in seconds (default 60).
+config = FetchConfig(use_browser=True, browser_timeout=30)
 
 with WebFetcher(config=config) as fetcher:
     result = fetcher.fetch("https://example.com")
@@ -265,7 +265,7 @@ All three classes are dataclasses in `core/config.py`, exported from `webfetch_t
 |-------|---------|--------|
 | `connect_timeout` | `5.0` | Connect timeout in seconds (HTTP mode and robots.txt) |
 | `http_timeout` | `30.0` | Read timeout in seconds, not a total deadline |
-| `browser_timeout` | `60.0` | Passed unchanged to Playwright's `page.goto(timeout=...)`, which is in milliseconds (see [Known issues](#known-issues)) |
+| `browser_timeout` | `60.0` | Navigation timeout in seconds for browser mode. Converted to milliseconds for Playwright's `page.goto()` |
 | `retry_count` | `2` | Limit for urllib3 `Retry` (total, connect, read, and status) |
 | `retry_statuses` | `[429, 500, 502, 503, 504]` | Status codes that are retried |
 | `backoff_factor` | `0.5` | urllib3 exponential backoff factor |
@@ -364,6 +364,8 @@ This section describes what the current code does, including its gaps.
    - The scheme must be in `PolicyConfig.allowed_schemes` (`http` and `https` by default).
    - When `block_private_ips` is true (the default), the hostname is resolved with `socket.getaddrinfo(..., AF_INET)`. The fetch is refused if the name has no IPv4 address, or if any address is in 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 0.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, or 240.0.0.0/4.
 2. `PolicyEngine.check_url()` applies `allowed_schemes`, `require_https`, `blocked_domains`, and `allowed_domains`. For URLs with an explicit port, it also applies `blocked_ports` and `allowed_ports` (80 and 443 by default).
+   - Domain rules match the URL's hostname: lowercased, without userinfo or port, and without a trailing dot. List entries are normalized the same way, and each entry also matches its subdomains. So `blocked_domains=["blocked.example"]` refuses `https://blocked.example:443/`, `https://user@blocked.example/`, and `https://Sub.Blocked.Example./`, and `allowed_domains=["example.com"]` allows `https://example.com:443/`.
+   - A URL whose authority (the `user@host:port` part) contains a backslash is refused. Python's `urlparse` reads `https://evil.example\@allowed.example/` as host `allowed.example`, but `requests` connects to `evil.example`.
 
 Not covered:
 
@@ -372,7 +374,6 @@ Not covered:
 - DNS rebinding. The hostname is resolved again when the connection is made, and the checked address is not pinned.
 - Browser mode after the first URL. Chromium follows redirects and loads scripts, images, frames, and other requests without these checks.
 - Other non-public ranges, such as 100.64.0.0/10.
-- Domain rules compare against the URL's host including any explicit port. So `https://blocked.example:443/` does not match `blocked_domains=["blocked.example"]`, and `https://example.com:443/` does not match `allowed_domains=["example.com"]`.
 
 ### robots.txt
 
@@ -403,11 +404,10 @@ Not covered:
 
 ## Known issues
 
-1. `FetchConfig.browser_timeout` defaults to `60.0`, next to the other timeouts, which are in seconds. However, it is passed to Playwright's `page.goto()`, which expects milliseconds, so the default allows only 60 ms. Set it explicitly, for example `browser_timeout=60_000`.
-2. When browser navigation fails (including on timeout), the result has `success=False`, but `metadata.error_message` is empty. The error text from `BrowserClient.fetch()` is dropped.
-3. The robots.txt cache is keyed by host but stores the verdict for the first path checked on that host. Later URLs on the same host reuse that verdict, whatever their path.
-4. The robots.txt parser never resets user-agent groups, so once a `User-agent: *` line has been read, the rules of later groups also apply. Agent names are compared case-sensitively against lowercased lines, so an agent-specific group matches only if the part of `user_agent` before the first `/` is lowercase.
-5. `WebFetchLoader` reads `language` from `metadata_extracted`, which `HTMLParser` does not fill, so the document's `language` is usually `None`. Its `extract_metadata` argument is accepted but ignored.
+1. When browser navigation fails (including on timeout), the result has `success=False`, but `metadata.error_message` is empty. The error text from `BrowserClient.fetch()` is dropped.
+2. The robots.txt cache is keyed by host but stores the verdict for the first path checked on that host. Later URLs on the same host reuse that verdict, whatever their path.
+3. The robots.txt parser never resets user-agent groups, so once a `User-agent: *` line has been read, the rules of later groups also apply. Agent names are compared case-sensitively against lowercased lines, so an agent-specific group matches only if the part of `user_agent` before the first `/` is lowercase.
+4. `WebFetchLoader` reads `language` from `metadata_extracted`, which `HTMLParser` does not fill, so the document's `language` is usually `None`. Its `extract_metadata` argument is accepted but ignored.
 
 ## Roadmap (not implemented yet)
 
@@ -465,6 +465,7 @@ webfetch_tool/
   pyproject.toml                    package metadata and dependencies
   README.md                         this file
   examples/basic_usage.py           example script (basic fetch, policy, LangChain tool and loader)
+  tests/                            pytest suite (domain rules, browser timeout)
   src/webfetch_tool/
     __init__.py                     exports WebFetcher, FetchConfig, PolicyConfig, AuthConfig,
                                     FetchResult, FetchMetadata
@@ -485,7 +486,19 @@ The loader example in `examples/basic_usage.py` imports `langchain_text_splitter
 
 ## Development and tests
 
-No automated tests yet. There is no `tests/` directory and no CI configuration. `pyproject.toml` has settings for pytest, black, ruff, and mypy, and the `dev` extra installs them.
+The `dev` extra installs pytest, pytest-asyncio, pytest-cov, black, ruff, and mypy. Their settings are in `pyproject.toml`. Run the tests from this directory:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The tests need no network access and no browser. They cover:
+
+- `tests/test_policy.py`: `PolicyEngine` domain rules with explicit ports, userinfo (including `https://allowed.example@evil.example/`), subdomains and lookalike hosts, letter case and trailing dots in URLs and in list entries, and a backslash in the authority. One test runs `WebFetcher.fetch()` to check that a blocked URL with `:443` is refused before any request is sent.
+- `tests/test_browser_timeout.py`: with Playwright replaced by mocks, `browser_timeout` in seconds reaches `page.goto()` in milliseconds, including the 60-second default.
+
+`pytest` also prints a coverage report (`--cov` in `addopts`). There is no CI configuration yet.
 
 ## License
 
